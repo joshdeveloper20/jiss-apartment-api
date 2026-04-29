@@ -405,6 +405,25 @@ const verifyPayment = async (req, res) => {
       console.error("Error sending payment confirmation email:", emailError);
     }
 
+    // Send admin notification after payment
+    try {
+      const room = booking.room;
+      await sendAdminNotification({
+        bookingCode: booking.bookingCode,
+        roomName: room.name,
+        guestName: booking.guestName,
+        guestEmail: booking.guestEmail,
+        checkInDate: booking.checkInDate,
+        checkOutDate: booking.checkOutDate,
+        numberOfNights: booking.numberOfNights,
+        totalPrice: booking.totalPrice,
+        paymentMethod: booking.paymentMethod,
+        paymentStatus: "completed",
+      });
+    } catch (adminError) {
+      console.error("Error sending admin notification:", adminError);
+    }
+
     return res.json({
       success: true,
       message: "Payment verified successfully",
