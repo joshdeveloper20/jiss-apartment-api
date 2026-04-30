@@ -2,10 +2,7 @@ const nodemailer = require("nodemailer");
 
 const sendEmail = async ({ to, subject, text, html }) => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    console.error(
-      "[EMAIL CONFIG ERROR] Missing EMAIL_USER or EMAIL_PASS environment variables. Email service is not configured.",
-    );
-    return { success: false, error: "Email service not configured" };
+    throw new Error("Missing EMAIL_USER or EMAIL_PASS environment variables.");
   }
 
   try {
@@ -18,8 +15,7 @@ const sendEmail = async ({ to, subject, text, html }) => {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
       },
-      connectionTimeout: 5000,
-      socketTimeout: 5000,
+      family: 4,
     });
 
     const mailOptions = {
@@ -30,15 +26,7 @@ const sendEmail = async ({ to, subject, text, html }) => {
       html,
     };
 
-    const result = await transporter.sendMail(mailOptions);
-    console.log(
-      `[EMAIL SUCCESS] Email sent to ${to} (Message ID: ${result.messageId})`,
-    );
-    return {
-      success: true,
-      message: "Email sent successfully",
-      messageId: result.messageId,
-    };
+    await transporter.sendMail(mailOptions);
   } catch (error) {
     console.error(
       `[EMAIL SEND ERROR] Failed to send email to ${to}. Error: ${error.message}`,
