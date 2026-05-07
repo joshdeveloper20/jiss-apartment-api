@@ -5,13 +5,24 @@ const Room = require("./models/Rooms");
 const rooms = require("../roomData/rooms").default;
 dotenv.config();
 
-mongoose.connect(process.env.MONGO_URI);
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log("MongoDB connected successfully");
+  } catch (error) {
+    console.error("MongoDB connection failed:", error.message);
+    process.exit(1);
+  }
+};
 
 // Function to seed the database
 async function seedDatabase() {
+  await connectDB();
+
   try {
-    // Clear existing users
-    await User.deleteMany();
+    // Clear existing data
+    await User.deleteMany({});
+    await Room.deleteMany({});
 
     // Create a default admin User
     const createdUser = await User.create({
@@ -22,7 +33,19 @@ async function seedDatabase() {
       role: "admin",
     });
 
+    console.log("Admin user created:", createdUser.email);
+
+    // Add user ID to each room
+    const roomsWithUser = rooms.map((room) => ({
+      ...room,
+      user: createdUser._id,
+    }));
+
+    // Seed room data
+    const createdRooms = await Room.insertMany(roomsWithUser);
+
     console.log("User data seeded successfully");
+    console.log(`Created ${createdRooms.length} rooms`);
     process.exit();
   } catch (error) {
     console.error("Error seeding the data", error);

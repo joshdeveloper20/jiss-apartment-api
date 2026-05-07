@@ -1,4 +1,5 @@
 const Room = require("../models/Rooms");
+const Booking = require("../models/Booking");
 
 // @desc    Get all rooms
 // @route   GET /api/rooms
@@ -100,8 +101,77 @@ const createRoom = async (req, res) => {
   }
 };
 
+// @desc    Check room availability for given dates
+// @route   GET /api/rooms/:id/availability
+// @access  Public
+const checkAvailability = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { checkInDate, checkOutDate } = req.query;
+
+    // Validate required parameters
+    if (!checkInDate || !checkOutDate) {
+      return res
+        .status(400)
+        .json({ message: "Please provide checkInDate and checkOutDate" });
+    }
+
+    // Validate room exists
+    const room = await Room.findById(id);
+    if (!room) {
+      return res.status(404).json({ message: "Room not found" });
+    }
+
+    // Parse dates
+    const checkIn = new Date(checkInDate);
+    const checkOut = new Date(checkOutDate);
+
+    // Validate dates
+    if (isNaN(checkIn.getTime()) || isNaN(checkOut.getTime())) {
+      return res
+        .status(400)
+        .json({ message: "Invalid date format. Please use YYYY-MM-DD" });
+    }
+
+    if (checkOut <= checkIn) {
+      return res
+        .status(400)
+        .json({ message: "Check-out date must be after check-in date" });
+    }
+
+    // Find overlapping bookings
+    const conflictingBookings = await Booking.find({
+      room: id,
+      $or: [
+        {
+          checkInDate: { $lt: checkOut },
+          checkOutDate: { $gt: checkIn },
+        },
+      ],
+    });
+
+    const isAvailable = conflictingBookings.length === 0;
+    const numberOfNights = Math.ceil(
+      (checkOut - checkIn) / (1000 * 60 * 60 * 24),
+    );
+
+    res.json({
+      isAvailable,
+      numberOfNights,
+      conflictingBookings: conflictingBookings.length,
+      message: isAvailable
+        ? "Room is available for the selected dates"
+        : `Room is not available. There are ${conflictingBookings.length} conflicting booking(s)`,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error checking availability" });
+  }
+};
+
 module.exports = {
   getRooms,
   getRoomById,
   createRoom,
+  checkAvailability,
 };
