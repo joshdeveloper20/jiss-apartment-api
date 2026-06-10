@@ -15,9 +15,9 @@ const getBookings = async (req, res) => {
     const skip = (page - 1) * limit;
 
     // Get total count for pagination
-    const totalBookings = await Booking.countDocuments();
+    const totalBookings = await Booking.countDocuments({ deleted: false });
 
-    const bookings = await Booking.find({})
+    const bookings = await Booking.find({ deleted: false })
       .populate("room", "name price_per_night")
       .populate("user", "name email")
       .sort({ createdAt: -1 }) // Sort by newest first
@@ -44,7 +44,7 @@ const getBookings = async (req, res) => {
 const getBookingByCode = async (req, res) => {
   try {
     const { code } = req.params;
-    const booking = await Booking.findOne({ bookingCode: code })
+    const booking = await Booking.findOne({ bookingCode: code, deleted: false })
       .populate("room", "name price_per_night")
       .populate("user", "name email");
 
@@ -64,7 +64,7 @@ const getBookingByCode = async (req, res) => {
 const getRoomBookings = async (req, res) => {
   try {
     const { roomId } = req.params;
-    const bookings = await Booking.find({ room: roomId }).sort({
+    const bookings = await Booking.find({ room: roomId, deleted: false }).sort({
       checkInDate: 1,
     });
     res.json(bookings);
@@ -143,6 +143,7 @@ const createBooking = async (req, res) => {
 
     const overlappingBooking = await Booking.findOne({
       room: roomId,
+      deleted: false,
       checkInDate: { $lt: checkOut },
       checkOutDate: { $gt: checkIn },
     });
@@ -219,31 +220,81 @@ const createBooking = async (req, res) => {
   }
 };
 
-// @desc    Update booking status
+// @desc    Update booking details
 // @route   PUT /api/bookings/:id
 // @access  Admin
 const updateBooking = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, paymentStatus } = req.body;
+    const { room, roomId, checkInDate, checkOutDate, status, paymentStatus } =
+      req.body;
 
-    const updateData = {};
+    const booking = await Booking.findById(id);
+    if (!booking || booking.deleted) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    const newRoomId = room || roomId || booking.room;
+    const newCheckIn = checkInDate
+      ? new Date(checkInDate)
+      : booking.checkInDate;
+    const newCheckOut = checkOutDate
+      ? new Date(checkOutDate)
+      : booking.checkOutDate;
+
+    if (newCheckIn >= newCheckOut) {
+      return res
+        .status(400)
+        .json({ message: "Check-out date must be after check-in date" });
+    }
+
+    if (room || roomId) {
+      const roomExists = await Room.findById(newRoomId);
+      if (!roomExists) {
+        return res.status(404).json({ message: "Room not found" });
+      }
+    }
+
+    const overlappingBooking = await Booking.findOne({
+      _id: { $ne: id },
+      room: newRoomId,
+      deleted: false,
+      checkInDate: { $lt: newCheckOut },
+      checkOutDate: { $gt: newCheckIn },
+    });
+
+    if (overlappingBooking) {
+      return res.status(400).json({
+        message: "Room is already booked for the selected dates.",
+      });
+    }
+
+    const finalRoom = await Room.findById(newRoomId);
+    const nights = Math.ceil(
+      (newCheckOut.getTime() - newCheckIn.getTime()) / (1000 * 3600 * 24),
+    );
+    const totalPrice = nights * finalRoom.price_per_night;
+
+    const updateData = {
+      room: newRoomId,
+      checkInDate: newCheckIn,
+      checkOutDate: newCheckOut,
+      numberOfNights: nights,
+      totalPrice,
+    };
+
     if (status !== undefined) updateData.status = status;
     if (paymentStatus !== undefined) updateData.paymentStatus = paymentStatus;
 
-    const booking = await Booking.findByIdAndUpdate(id, updateData, {
+    const updatedBooking = await Booking.findByIdAndUpdate(id, updateData, {
       new: true,
     })
       .populate("room", "name price_per_night")
       .populate("user", "name email");
 
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
-
     res.json({
       message: "Booking updated successfully",
-      booking,
+      booking: updatedBooking,
     });
   } catch (error) {
     console.error(error);
@@ -251,21 +302,24 @@ const updateBooking = async (req, res) => {
   }
 };
 
-// @desc    Delete booking
+// @desc    Soft delete booking to trash
 // @route   DELETE /api/bookings/:id
 // @access  Admin
 const deleteBooking = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const booking = await Booking.findByIdAndDelete(id);
-
-    if (!booking) {
+    const booking = await Booking.findById(id);
+    if (!booking || booking.deleted) {
       return res.status(404).json({ message: "Booking not found" });
     }
 
+    booking.deleted = true;
+    booking.deletedAt = new Date();
+    await booking.save();
+
     res.json({
-      message: "Booking deleted successfully",
+      message: "Booking moved to trash successfully",
       booking,
     });
   } catch (error) {
@@ -274,22 +328,146 @@ const deleteBooking = async (req, res) => {
   }
 };
 
+// @desc    Get deleted bookings (trash)
+// @route   GET /api/bookings/trash
+// @access  Admin
+const getDeletedBookings = async (req, res) => {
+  try {
+    const bookings = await Booking.find({ deleted: true })
+      .populate("room", "name price_per_night")
+      .populate("user", "name email")
+      .sort({ deletedAt: -1 });
+
+    res.json({ bookings });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error fetching trash" });
+  }
+};
+
+// @desc    Restore booking from trash
+// @route   PUT /api/bookings/:id/restore
+// @access  Admin
+const restoreBooking = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const booking = await Booking.findById(id);
+    if (!booking || !booking.deleted) {
+      return res.status(404).json({ message: "Booking not found in trash" });
+    }
+
+    booking.deleted = false;
+    booking.deletedAt = null;
+    await booking.save();
+
+    res.json({
+      message: "Booking restored successfully",
+      booking,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error restoring booking" });
+  }
+};
+
+// @desc    Permanently delete booking from trash
+// @route   DELETE /api/bookings/:id/permanent
+// @access  Admin
+const permanentDeleteBooking = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const booking = await Booking.findOne({ _id: id, deleted: true });
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found in trash" });
+    }
+
+    await Booking.findByIdAndDelete(id);
+
+    res.json({ message: "Booking permanently deleted" });
+  } catch (error) {
+    console.error(error);
+    res
+      .status(500)
+      .json({ message: "Server error permanently deleting booking" });
+  }
+};
+
+// @desc    Restore all bookings from trash
+// @route   PUT /api/bookings/trash/restore-all
+// @access  Admin
+const restoreAllBookings = async (req, res) => {
+  try {
+    const result = await Booking.updateMany(
+      { deleted: true },
+      { deleted: false, deletedAt: null },
+    );
+
+    res.json({
+      message: "All trashed bookings restored successfully",
+      count: result.modifiedCount,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error restoring all bookings" });
+  }
+};
+
+// @desc    Permanently delete all bookings from trash
+// @route   DELETE /api/bookings/trash/empty
+// @access  Admin
+const emptyTrashBookings = async (req, res) => {
+  try {
+    const result = await Booking.deleteMany({ deleted: true });
+    res.json({
+      message: "Trash emptied successfully",
+      count: result.deletedCount,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error emptying trash" });
+  }
+};
+
+// @desc    Soft delete all active bookings to trash
+// @route   DELETE /api/bookings
+// @access  Admin
+const deleteAllBookings = async (req, res) => {
+  try {
+    const result = await Booking.updateMany(
+      { deleted: false },
+      { deleted: true, deletedAt: new Date() },
+    );
+
+    res.json({
+      message: "All bookings moved to trash successfully",
+      count: result.modifiedCount,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error deleting all bookings" });
+  }
+};
+
 // @desc    Get booking statistics (for dashboard)
 // @route   GET /api/bookings/stats/dashboard
 // @access  Admin
 const getBookingStats = async (req, res) => {
   try {
-    const totalBookings = await Booking.countDocuments();
+    const totalBookings = await Booking.countDocuments({ deleted: false });
     const totalUsers = await User.countDocuments();
     const totalRooms = await Room.countDocuments();
     const confirmedBookings = await Booking.countDocuments({
       status: "confirmed",
+      deleted: false,
     });
     const pendingBookings = await Booking.countDocuments({
       status: "pending",
+      deleted: false,
     });
 
-    const recentBookings = await Booking.find({})
+    const recentBookings = await Booking.find({ deleted: false })
       .sort({ createdAt: -1 })
       .limit(10)
       .populate("room", "name price_per_night")
@@ -315,7 +493,7 @@ const getBookingStats = async (req, res) => {
 const getUserBookings = async (req, res) => {
   try {
     const { userId } = req.params;
-    const bookings = await Booking.find({ user: userId })
+    const bookings = await Booking.find({ user: userId, deleted: false })
       .populate("room", "name price_per_night category")
       .sort({ createdAt: -1 });
 
@@ -442,6 +620,12 @@ module.exports = {
   createBooking,
   updateBooking,
   deleteBooking,
+  getDeletedBookings,
+  restoreBooking,
+  restoreAllBookings,
+  permanentDeleteBooking,
+  deleteAllBookings,
+  emptyTrashBookings,
   getBookingStats,
   getUserBookings,
   paystackWebhook,
